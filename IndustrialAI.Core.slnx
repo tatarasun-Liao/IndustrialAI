@@ -2,5 +2,6 @@
   <Folder Name="/doc/">
     <File Path="Generic.txt" />
   </Folder>
+  <Project Path="IndustrialAI.ConsoleDemo/IndustrialAI.ConsoleDemo.csproj" Id="d8ee3fa3-177b-485c-b358-d9093b487427" />
   <Project Path="IndustrialAI.Core/IndustrialAI.Core.csproj" />
 </Solution>
