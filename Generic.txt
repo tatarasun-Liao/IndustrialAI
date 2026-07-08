@@ -1,0 +1,223 @@
+1.为什么使用泛型而不是用object？
+A：目的：使用一个方法完成多种类型的操作。
+   1.调用object的原理是object是一切类的父类，而一切子类出现的地方都可以用父类代替，这会导致类型安全问题，因为使用object会丢失类型信息，需要进行类型转换，容易引发运行时错误。
+而泛型在编译时就能进行类型检查，确保类型安全。
+   2.使用泛型可以提高代码的可读性和可维护性，因为泛型可以明确指定类型，而使用object则需要进行类型转换，代码不够直观。
+   3.使用泛型可以提高性能，因为使用object需要进行装箱和拆箱操作，而泛型可以避免这些操作，从而提高性能。
+
+   装箱：值类型转换为引用类型的过程，例如将int类型转换为object类型。在托管堆上开辟一块内存空间来存储值类型的副本，将栈上的值类型数据完整复制到其中，并返回该副本的引用。
+   拆箱：引用类型转换为值类型的过程，例如将object类型转换为int类型。首先检查被拆箱对象是否是对应值类型的装箱实例，如果是，则将其引用转换为值类型的引用，并返回该值类型的副本；如果不是，则抛出InvalidCastException异常。
+   拆箱时类型需要严格匹配，不可以自动转换类型，否则会报错。
+   装箱与拆箱时，装箱需要分配内存复制数据且操作后GC进行回收，拆箱需要强制检查类型，性能开销较大。
+
+   而泛型在编译时就能确定类型，不需要进行装箱和拆箱操作，从而提高性能。实际上是由于编译器升级了泛型的实现方式，泛型在编译时会生成特定类型的代码，从而避免了装箱和拆箱操作，提高了性能。
+
+   泛型方法：   
+        public static void ShowGeneric<T>(T tParameter)
+        {
+            Console.WriteLine($"This is {typeof(CommonMethod).Name},parameter={tParameter.GetType().Name},type={tParameter}");
+        }
+
+   调用泛型方法时，如果通过参数可以推导出类型，则可以省略类型参数。
+
+2.泛型的底层与设计思想：
+A：泛型的底层是通过类型参数化来实现的，设计思想是将类型作为参数传递给类、接口或方法，从而实现代码的复用和类型安全。
+泛型是在调用的时候确定类型的，延迟声明设计，声明时不确定类型，调用时才确定具体类型。
+在泛型底层编译的时候会给每个泛型类型生成一个特定类型的代码，这样在运行时就不需要进行类型检查和转换，并且在ILspy可以看到给类型处添加了~作为类型占位符
+
+3.除了泛型方法还有：
+泛型类、泛型接口、泛型委托：一个类型满足不同类型需求，注意每个不同类型参数的泛型类都是一个不同的类型，所以实例化不同参数类型的泛型类生成的都是不同类型的唯一副本，泛型类在编译时会为每个不同的类型参数生成一个特定类型的代码。
+泛型类：
+GenericClass<int> intClass1 = new GenericClass<int>();
+
+泛型接口：
+public interface GenericInterface<T>
+    {
+
+    }
+
+    public class MyClass<T>:GenericInterface<T>
+    {
+
+    }
+GenericInterface<int> intInterface1 = new MyClass<int>();
+
+泛型委托：
+public delegate void CustomAction<T>(T obj);
+CustomAction<int> customAction1 = s => { };
+
+4.泛型类的继承：
+子类与父类的类型参数可以相同，也可以不同，子类可以继承父类的泛型类型参数，也可以指定具体类型参数。
+但是若父类的类型参数是泛型类型参数，则子类类型参数必须与父类保持一致或者必须指定具体类型参数。
+public class ChildGenericClass<T>: GenericClass<T>//允许
+public class ChildGenericClass<T>: GenericClass<S>//不允许
+public class ChildGenericClass<T,S,Y,X,Richard> : GenericClass<string> //允许
+{
+}
+
+5.普通缓存与泛型缓存（ORM会用到）：
+为不同类型创建不同的缓存数据。
+
+普通字典缓存：
+原理：通过静态构造函数创建全局唯一字典，将不同的type作为不同的key，来保存不同value实现缓存数据，字典缓存是常驻内存的，只要程序进程不停止，就会一直保存数据在内存中。
+ public class DictionaryCache
+    { 
+        /// <summary>
+        /// 静态字典---常驻内存~ 只要程序进程不停止，就会一直保存数据在内存；
+        /// </summary>
+        private static Dictionary<Type, string> _TypeTimeDictionary = null;
+
+        //同一个类的静态构造函数在整个进程中，执行且只执行一次；
+        static DictionaryCache()
+        {
+            Console.WriteLine("This is DictionaryCache 静态构造函数");
+            _TypeTimeDictionary = new Dictionary<Type, string>();
+        }
+
+        public static string GetCache<T>()
+        {
+            Type type = typeof(T); //获取类的type 类型
+            if (!_TypeTimeDictionary.ContainsKey(type))
+            {
+                //写死的，生成数据；  使用当前这个type 作为key 保存到字典中去
+                _TypeTimeDictionary[type] = $"{typeof(T).FullName}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}";
+            }
+            return _TypeTimeDictionary[type];
+        }
+    }
+
+ 泛型缓存：
+    原理：利用了泛型类的特性，每个不同类型参数的泛型类都是一个不同的类型，所以实例化不同参数类型的泛型类生成的都是不同类型的唯一副本，利用这个特性来实现缓存数据。
+public class GenericCache<T>
+    {
+        /// <summary>
+        ///同一个类的静态构造函数在整个进程中，执行且只执行一次；
+        /// </summary>
+        static GenericCache()
+        {
+            Console.WriteLine("This is GenericCache 静态构造函数");
+            //_TypeTime = string.Format("{0}_{1}", typeof(T).FullName, DateTime.Now.ToString("yyyyMMddHHmmss.fff")); 
+            _TypeTime = $"{typeof(T).FullName}_{DateTime.Now.ToString("yyyyMMddHHmmss.fff")}";
+        }
+
+        /// <summary>
+        /// 只缓存一个字符串
+        /// </summary>
+        private static string _TypeTime = "";
+
+        public static string GetCache()
+        {
+            return _TypeTime;
+        }
+
+    }
+
+6.泛型约束：
+约束传入的类型参数，避免传入的类型无法在方法内使用，以保证类型安全。常见的泛型约束有：
+   1. where T : struct  // 值类型约束
+   2. where T : class   // 引用类型约束
+   3. where T : new()   // 必须有无参构造函数
+   4. where T : BaseClass // 必须继承自指定的基类
+   5. where T : IInterface // 必须实现指定的接口
+   6.where T:Enum // 枚举类型约束
+
+   并且如果有多个类型参数，则可以使用逗号分隔多个约束条件，例如：
+   where T : class, new() // 引用类型约束并且必须有无参构造函数
+   where T : BaseClass, IInterface  
+   
+   public static void ShowGenericNew<T,S,Y,Richard>(T tParameter) where T : struct
+        {
+        }
+
+   public static void ShowGenericNew2<T, S>(T tParameter) where T : class where S : struct
+        {
+        }
+
+7.协变与逆变：
+对于普通的有继承关系的类来说，子类出现的地方可以使用父类替代：
+Animal animal2 = null;
+animal2 = new Cat();
+
+但是对于泛型类，不可以将子类作为类型参数的泛型替换为父类作为泛型参数的泛型，因为这两个泛型类是两种不同的类型，虽然类型参数存在继承关系，但是泛型类
+本身并不存在这样的继承关系，所以引入协变与逆变来在泛型类中实现类似有继承关系的普通类的表达方式
+
+如：
+List<Animal> animalList1 = null;
+animalList1 = new List<Animal>();
+
+
+但是不可以写成
+animalList1 = new List<Cat>();  
+因为List<Animal>和List<Cat>是两种不同的类型，虽然Animal和Cat存在继承关系，但是List<Animal>和List<Cat>并不存在继承关系，所以不可以将子类作为类型参数的泛型替换为父类作为泛型参数的泛型。
+这就是泛型‘不和谐’的地方，无法像是普通类一样，子类出现的地方可以使用父类替代。所以使用协变。 
+
+协变：
+
+IEnumerable<Animal> animalList1 = new List<Animal>();
+IEnumerable<Animal> animalList2 = new List<Cat>();
+
+<-----------**********************************------------>
+因为在IEnumerable<T>接口中，T是使用out修饰的协变类型参数，out 修饰的类型参数只能作为返回值使用，不能作为方法的参数使用。//*****************************
+上面的例子之所以可以正常运行是因为List<Cat>实现了IEnumerable<Cat>接口，而IEnumerable<Cat>又可以隐式转换为IEnumerable<Animal>，因为T是协变类型参数，所以可以将子类作为类型参数的泛型替换为父类作为泛型参数的泛型。
+最终协变达成效果：左边使用父类作为类型参数的泛型，右边使用子类作为类型参数的泛型，达成了类似普通类的继承关系。
+
+例如：
+public interface ICustomerListOut<out T>
+    {
+        T Get();
+
+        //void Show(T t); out修饰的类型参数只能作为返回值使用，不能作为方法的参数使用。所以不可以在接口中定义这样的方法
+    }
+
+public class CustomerListOut<T> : ICustomerListOut<T>
+    {
+        public T Get()
+        {
+            return default(T);
+        }
+
+        public void Show(T t)
+        {
+
+        }
+    }
+
+    调用时：
+    ICustomerListOut<Animal> customerList1 = new CustomerListOut<Animal>();
+    ICustomerListOut<Animal> customerList2 = new CustomerListOut<Cat>();
+
+Q：为什么协变类型参数只能作为返回值使用，不能作为方法的参数使用？
+A：因为out的类型是父类，如果作为方法的参数使用，那么传入的参数类型可能是子类，这样就会导致类型不安全的问题。
+详细来说，如果不使用out进行修饰，那么在进行继承时，泛型类类的泛型参数类型与继承的接口参数类型保持一致，当接口传入父类类型时，若泛型类内参数类型传入的是
+子类，则会导致类型参数不匹配的问题从而不存在继承关系
+
+逆变：
+与协变相反，逆变是指将父类作为类型参数的泛型替换为子类作为泛型参数的泛型。逆变使用in修饰类型参数，in修饰的类型参数只能作为方法的参数使用，不能作为返回值使用。
+即效果是：左边使用子类作为类型参数的泛型，右边使用父类作为类型参数的泛型。
+
+例如：
+public interface ICustomerListIn<in T>
+    {
+        //T Get();//T 只能作为输入参数，不可作为返回值，所以不能这样返回T类型
+
+        void Show(T t);
+    }
+
+public class CustomerListIn<T> : ICustomerListIn<T>
+    {
+        //public T Get()
+        //{
+        //    return default(T);
+        //}
+
+        public void Show(T t)
+        {
+
+        }
+    }
+和协变类似，因为在调用的时候，ICustomerListIn内的参数里类型是子类，而CustomerListIn内的参数里类型是父类，在调用方法时，实际执行的是CustomerListIn内的父类方法，而父类不能用子类代替。
+逆变的意义之一在于，左侧使用子类的泛型，在右侧可以用父类或继承自父类的子类参数的泛型来替代，从而实现类似普通类的继承关系。
+
+协变和逆变的意义在于：
+1. 解决了泛型类中类型参数的继承关系问题，使得泛型类可以像普通类一样，子类出现的地方可以使用父类替代。
+2.可以避开不存在继承关系的类型参数问题，可以避开一部分类型风险约束，并且约束了不同类型参数的适用范围，规定了哪些类型参数可以作为返回值，哪些类型参数可以作为方法的参数，从而提高了代码的可读性和可维护性。

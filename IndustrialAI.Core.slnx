@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/doc/">
+    <File Path="Generic.txt" />
+  </Folder>
+  <Project Path="IndustrialAI.Core/IndustrialAI.Core.csproj" />
+</Solution>
