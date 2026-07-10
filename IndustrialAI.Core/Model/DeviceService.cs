@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace IndustrialAI.Core
+namespace IndustrialAI.Core.Model
 {
     //根据设备ID读取电压值
     public class DeviceService

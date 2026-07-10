@@ -1,4 +1,4 @@
-﻿namespace IndustrialAI.Core
+﻿namespace IndustrialAI.Core.Model
 {
     public class Result<T>
     {
