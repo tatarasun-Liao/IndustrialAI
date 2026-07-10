@@ -6,9 +6,10 @@ using IndustrialAI.Core.Driver;
 using IndustrialAI.Core.Events;
 using IndustrialAI.Core.Factory;
 using IndustrialAI.Core.Model;
+using IndustrialAI.Core.Training.DelegateEvent;
 using System.Reflection;
 
-
+#if false
 #region Test Generic
 {
     var Service = new DeviceService();
@@ -121,5 +122,91 @@ using System.Reflection;
     Console.WriteLine("\n=== 6. 事件总线测试 ===");
 
     var eventbus = new EventBus();
+
+    //1.同步委托订阅
+    //创建一个实现IEvent的引用类型DeviceOnlineEvent作为类型参数的委托并缓存DeviceOnlineEvent与委托到_handlers
+    eventbus.Subscribe<DeviceOnlineEvent>(evt =>
+    {
+        Console.WriteLine($"[订阅者-Lambda] 设备 {evt.DeviceId} 在 {evt.OnlineTime:HH:mm:ss} 上线。");
+    });
+
+
+    //2.使用Subscribe的重载，将实现IEventHandler<object>的UniversalLoggerHandler实例作为参数传入，并将Handle方法缓存到_handlers
+    var loggerHandler = new UniversalLoggerHandler();
+
+    eventbus.Subscribe<DeviceOnlineEvent>(loggerHandler);
+
+    // 订阅者 3：模拟一个会抛出异常的处理器（测试异常隔离）
+    eventbus.Subscribe<DeviceOnlineEvent>(evt =>
+    {
+        Console.WriteLine($"[订阅者-异常] 即将抛出异常...");
+        throw new InvalidOperationException("模拟异常测试");
+    });
+
+    var testEvent = new DeviceOnlineEvent { DeviceId = "EOL-01" };
+
+    await eventbus.PublishAsync(testEvent);
+
+    Console.WriteLine("事件发布完成（异步）。");
+
+    // 同步发布测试
+    Console.WriteLine("\n同步发布测试：");
+
+    eventbus.Publish(new DeviceOnlineEvent { DeviceId = "SYNC-TEST" });
+
+    Console.WriteLine("事件总线测试完成。");
 }
 #endregion
+
+#endif
+
+#region Delegate Event
+Console.WriteLine("========== 标准事件与多播委托专项训练 ==========\n");
+
+PlcDataPublisher plcPublisher = new PlcDataPublisher();
+
+// 2. 创建订阅者（使用 using 块确保训练结束后自动 Dispose 取消订阅）
+//只有实现了IDispose的类才能使用该写法
+using (var displaySub = new DataDisplaySubscriber(plcPublisher))
+using (var loggerSub = new DataLoggerSubscriber(plcPublisher))
+{
+
+    Console.WriteLine("\n--- 场景 1: 正常发布，两个订阅者都会响应 ---");
+
+    //发布者触发方法，内部事件被触发，按照订阅顺序执行
+    plcPublisher.OnSimulateValueUpdate(24.5f);
+
+    // 4. 手动取消日志订阅者的订阅（模拟业务逻辑主动取消）
+    Console.WriteLine("\n--- 场景 2: 手动取消日志订阅者 ---");
+    loggerSub.Unsubscribe(); // 此时日志订阅者不再响应
+
+    // 再次发布数据，只有显示器订阅者响应
+    Console.WriteLine("\n--- 场景 3: 再次发布数据 ---");
+    plcPublisher.OnSimulateValueUpdate(12.8f);
+
+    // 5. 显式展示多播委托特性：临时使用 Lambda 再附加一个订阅（展示动态添加）
+    Console.WriteLine("\n--- 场景 4: 额外使用 Lambda 临时订阅（测试多播） ---");
+
+    //重新定义一个相同类型的匿名委托，内部匿名方法
+    PlcDataPublisher.DataChangeEvendHandler tempHandler = (sender, val) =>
+    {
+        Console.WriteLine($"[临时订阅者] 瞬时响应: {val} V");
+    };
+
+    plcPublisher.DataChanged += tempHandler;
+
+    // 发布，此时应该有 2 个订阅者（显示器 + 临时）
+    plcPublisher.OnSimulateValueUpdate(5.0f);
+
+    // 6. 演示取消临时订阅（必须使用同一个委托变量）
+    Console.WriteLine("\n--- 场景 5: 取消临时订阅者 ---");
+
+    plcPublisher.DataChanged -= tempHandler; // 正确取消
+    plcPublisher.OnSimulateValueUpdate(9.9f);
+    Console.WriteLine("\n--- 场景 6: using 块结束，显示器订阅者自动取消订阅 ---");
+}
+Console.WriteLine("\n--- 场景 7: 全部取消后，发布者无响应 ---");
+plcPublisher.OnSimulateValueUpdate(0.0f);
+#endregion
+
+Console.ReadKey();

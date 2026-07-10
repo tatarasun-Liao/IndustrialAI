@@ -39,6 +39,7 @@ namespace IndustrialAI.Core.Events
             //如果 key 存在，则执行 update 委托；否则执行 add 委托
             _handlers.AddOrUpdate(eventType, //添加Type
                 new List<WeakReference> { weakRef },//添加的包装Action弱引用
+                //通过匿名委托返回一个List<WeakReference>对象
                 (key, list) =>
                 {
                     list.Add(weakRef);
@@ -62,7 +63,7 @@ namespace IndustrialAI.Core.Events
         /// <typeparam name="T"></typeparam>
         /// <param name="event"></param>
         /// <returns></returns>
-        public async Task PublishAsync<T>(T @event) where T : class, IEvent
+        public async Task PublishAsync<T>(T @event) where T : class, IEvent//约束只能传参实现IEvent的类型
         {
             if (@event == null)
 
@@ -84,10 +85,13 @@ namespace IndustrialAI.Core.Events
             {
                 foreach (var wr in weakReferences)
                 {
+                    //判断是否是需要执行的委托类型并赋值action变量
                     if (wr.Target is Action<T> action)
 
+                        //将委托放入委托执行列表
                         handlersToInvoke.Add(action);
 
+                    //判断弱引用是否已经被杀死
                     else if (!wr.IsAlive)
 
                         deadRefs.Add(wr);//收集死亡的弱引用
