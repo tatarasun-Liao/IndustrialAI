@@ -170,3 +170,213 @@ async 方法内部抛出的异常会被包装在返回的 Task 中。
 
 ·取消异步方法
 通过传递 CancellationToken 给异步方法，方法内部周期性检查或传给底层 API。
+
+二、CancellationToken 与 CancellationTokenSource取消线程
+模式：协作式：请求取消的一方通过 CancellationTokenSource 发出信号，
+执行操作的一方通过轮询 CancellationToken 自行决定终止。这避免了 Thread.Abort 的破坏性。
+
+1.声明方式：
+// 无超时，手动取消
+var cts = new CancellationTokenSource();
+CancellationToken token = cts.Token;
+
+// 带超时，自动取消
+var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+// 链接多个Token，任意一个取消则链接源取消
+var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token1, token2);
+
+// 为 CancellationToken 注册回调
+token.Register(() => Console.WriteLine("已被取消"));
+
+2.触发取消:
+· 调用方请求取消：
+cts.Cancel();       // 请求取消
+cts.CancelAfter(5000); // 延迟取消（毫秒）
+
+· 响应方响应取消：
+public async Task ProcessDataAsync(CancellationToken token)
+{
+    while (moreData)
+    {
+        // 方法1：抛出异常（推荐，符合约定）
+        token.ThrowIfCancellationRequested();
+        
+        // 方法2：判断后返回
+        if (token.IsCancellationRequested) return;
+        
+        // 传递给底层异步API
+        await stream.ReadAsync(buffer, token);
+    }
+}
+
+OperationCanceledException 是取消的标准异常，调用方应捕获它并视为正常终止
+
+三、System.Threading.Channels —— 异步数据管道
+
+Channel<T> 是一种高性能的生产者-消费者异步队列，设计用于在多线程环境中安全地传递数据，并原生支持异步等待和背压控制。
+它吸收了 System.Collections.Concurrent 的无锁特性并加入了 TaskCompletionSource 实现高效的异步阻塞。
+
+1.声明方式：
+· 无界通道：
+Channel<string> unbounded = Channel.CreateUnbounded<string>();
+无界通道内部使用无界 ConcurrentQueue<T>，写入永远不会等待，但可能耗尽内存
+
+·有界通道：
+var options = new BoundedChannelOptions(1000)
+{
+    FullMode = BoundedChannelFullMode.Wait   // 写入等待空间，
+     SingleWriter = true,  // 优化提示：只有一个生产者，可减少锁
+    SingleReader = true   // 只有一个消费者
+};
+Channel<string> bounded = Channel.CreateBounded<string>(options);
+
+BoundedChannelFullMode 枚举：
+
+Wait：写入异步等待直到有空位（默认）。
+
+DropOldest：丢弃队列中最旧的消息，写入成功。
+
+DropNewest：丢弃正要写入的消息，写入成功。
+
+DropWrite：直接丢弃写入的消息，TryWrite 返回 false，WriteAsync 抛出异常
+
+2.Writer（生产者端）
+
+ChannelWriter<string> writer = channel.Writer;
+
+// 非阻塞写入
+if (writer.TryWrite("msg"))
+{
+    // 成功
+}
+else
+{
+    // 失败（有界通道满且模式为 DropWrite 时可能）
+}
+
+// 异步写入，可等待，支持取消
+await writer.WriteAsync("msg", cancellationToken);
+
+// 标记写入完成，之后不能再写入，Reader读完会停止
+writer.Complete();
+writer.TryComplete(ex); // 带上异常，Reader端会获取到
+
+3.Reader（消费者端）
+
+ChannelReader<string> reader = channel.Reader;
+
+// 非阻塞读取
+if (reader.TryRead(out string msg))
+{
+    // 处理
+}
+
+// 异步读取单条
+string msg = await reader.ReadAsync(cancellationToken);
+
+// 等待有数据可读，但不取出
+if (await reader.WaitToReadAsync(cancellationToken))
+{
+    // 此时可确保有数据，再用 TryRead 批量获取
+    while (reader.TryRead(out string item))
+    {
+        // 处理
+    }
+}
+
+// 异步流式读取 (需要 C# 8.0+)
+await foreach (string item in reader.ReadAllAsync(cancellationToken))
+{
+    // 处理，通道完成或取消时退出循环
+}
+
+*************ReadAllAsync 返回 IAsyncEnumerable<T>，
+它内部就是反复调用 WaitToReadAsync 和 TryRead，直到通道 Completion 对象完成
+
+4.多生产者多消费者：
+Channel 天生支持多生产者写入和多消费者读取，内部所有操作线程安全。消费者们并发调用 ReadAllAsync 将形成自然负载均衡：每条消息只会被一个消费者获取。
+
+var tasks = new Task[consumerCount];
+for (int i = 0; i < consumerCount; i++)
+{
+    tasks[i] = Task.Run(async () =>
+    {
+        await foreach (var item in reader.ReadAllAsync(ct))
+        {
+            Process(item);
+        }
+    });
+}
+await Task.WhenAll(tasks);
+
+5.背压处理
+有界通道结合 BoundedChannelFullMode.Wait 是天然的背压机制：当消费者跟不上时，生产者写入会被异步阻塞，减慢生产速度，
+直到消费者腾出空间。
+
+监控通道积压
+
+int pending = reader.Count;
+
+6.完成与异常处理
+写入端调用 writer.Complete() 后，reader 端在读完剩余所有数据后，ReadAllAsync 循环自然退出。
+
+如果在调用 Complete 时传入异常（ChannelClosedException），那么 reader 端 await foreach 会抛出该异常。
+
+消费者也可通过 reader.Completion 属性获知通道已关闭：
+
+await reader.Completion; // 当 Writer 调用 Complete() 后此 Task 完成
+
+7.源码级理解：内部如何实现异步等待
+无界通道内部主要由 ConcurrentQueue<T> 和 Deque<AsyncOperation<T>> 实现。
+
+当 ReadAsync 发现队列为空，会创建一个 AsyncOperation<T> 结构（包含一个 ValueTask<T> 的源）并加入等待者队列，然后返回该 ValueTask。
+
+当 WriteAsync 写入数据后，检查是否有等待的读者，有则直接将数据通过 TrySetResult 设置给那个异步操作，从而唤醒正在 await 的消费者，整个过程无锁无竞争，极快。
+
+有界通道则多一个信号量（SemaphoreSlim）控制容量，配合写等待队列。
+
+8. 性能建议
+如果场景是高吞吐、低延迟，尽量使用 单消费者/单生产者 选项减少锁开销。
+
+批量写入或批量读取可以减少异步调用次数。
+
+对于不需要异步等待的场景（如内存内流水线，数据总是能立刻处理），ConcurrentQueue 仍更简单高效
+
+四、 IAsyncEnumerable<T> 与 await foreach
+IAsyncEnumerable<T> 以支持异步拉取数据流，弥补了之前只能一次性返回整个 Task<IEnumerable<T>> 的不足。非常适合数据库游标、分页 API、事件流等
+
+1.声明方法：
+public async IAsyncEnumerable<int> GenerateNumbersAsync(
+    [EnumeratorCancellation] CancellationToken ct = default)
+{
+    for (int i = 0; i < 10; i++)
+    {
+        ct.ThrowIfCancellationRequested();
+        await Task.Delay(100, ct); // 异步工作
+        yield return i;            // 每次 yield 控制权返回调用者
+    }
+}
+
+注：yield关键字与IEnumerable迭代器组合使用，只有在进行遍历时才有效果，如果不添加yield关键字，则遍历需要完全结束后才能返回结果，且占用完整遍历结果空间，
+但是加上yield后会形成迭代器模式，实现遍历一个数据，返回一个数据，并且每次遍历只占用一个元素的堆栈内存，适合及大量数据
+
+实现原理：
+编译器将 async 迭代器方法转换为一个实现了 IAsyncEnumerable<T> 和 IAsyncEnumerator<T> 的状态机。每次调用 MoveNextAsync() 都会执行一段状态机的代码直到下一个 yield return 或结束。
+
+2.消费异步迭代器
+
+//由于GenerateNumbersAsync内部使用yield实现了迭代器模式，在外部调用时可以实现外面循环一次，找GenerateNumbersAsync方法要一个最新的遍历数据
+而不是等待GenerateNumbersAsync返回完整的列表后再foreach循环，可以节约内存，增加吞吐量
+await foreach (int number in GenerateNumbersAsync().WithCancellation(cts.Token))
+{
+    Console.WriteLine(number);
+}
+// 循环结束后，异步枚举器会被 Dispose
+
+3.使用 System.Linq.Async 包：提供 Where, Select, Take, ToListAsync 等 LINQ 操作符。
+
+var result = await GenerateNumbersAsync()
+    .Where(x => x % 2 == 0)
+    .Select(x => x * 2)
+    .ToListAsync(cts.Token);
