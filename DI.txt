@@ -1,0 +1,101 @@
+· 第一层：为什么要发明 DI 容器？（解决造人的痛苦）
+假设你在写一个 UserController（处理用户请求）。没有容器时，你需要自己硬编码去“造”出它需要的所有东西：
+
+csharp
+// ❌ 古老的紧耦合写法
+public class UserController 
+{
+    private UserService _service;
+    public UserController() 
+    {
+        // 你自己要负责 new 出 UserService
+        _service = new UserService(); 
+        // 糟糕！UserService 内部还要 new 一个 UserRepository
+        // 如果你哪天想换一个 Repository 实现，整个代码都得大改！
+    }
+}
+痛点：程序员把大量时间花在“写 new 语句”和“拆解依赖关系”上，代码极度僵硬，单元测试根本没法做（没法把真实数据库换成 Mock 模拟库）。
+
+容器的诞生：
+容器的核心理念是：“老子不自己造，我向一个总管（容器）申请，总管帮我造好所有东西，并且把依赖关系通过构造函数送到我手里。” 这就是“依赖注入（Dependency Injection）”。
+
+· 第二层：什么是“注册”？（你要告诉仓库该造什么）
+注册（Registration），就是“告诉 DI 容器一张契约：以后谁要这个接口，你就给他哪个实现类”。
+
+在 .NET 8 项目中，你通常会在 Program.cs 里看到这样的代码：
+
+csharp
+// 告诉容器：当有人需要 IUserRepository 时，请提供 UserRepository 实例
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+
+// 告诉容器：当有人需要 UserService 时，请提供 UserService 实例
+builder.Services.AddScoped<UserService>();
+
+底层本质：
+容器底层就是一个巨大的 Dictionary（字典）。
+
+Key 是你请求的类型（比如 IUserRepository）。
+
+Value 是你注册的对应实现（UserRepository）以及它的构造方法。
+当你调用注册方法时，容器只是把这个映射关系记在了它的内存字典里。这时候还没有真正产生对象，一切只是“图纸”
+
+· 第三层：什么是 DI 容器？（它是个智能的“递归机器人”）
+容器的底层运行逻辑（极其重要）：
+
+当你的代码跑起来，某个地方（比如控制器）写了 public UserController(IUserRepository repo)。此时，DI 容器开始干活了：
+
+查字典：容器查了一下，发现 IUserRepository 注册给了 UserRepository。
+
+看仓库：容器准备创建 UserRepository。但是，它发现 UserRepository 的构造函数里写的是 public UserRepository(IConfiguration config)。
+
+递归构建：容器立刻再去查字典，看 IConfiguration 给了谁，找到了，并先创建好 IConfiguration。
+
+造核心：用 IConfiguration 构造出 UserRepository。
+
+交付：最后把造好的 UserRepository 传给 UserController。
+
+这个“顺着依赖树，像剥洋葱一样层层构建，直到把所有小部件全造完”的过程，就是容器最核心的魔法
+
+·第四层：注册时的“三种生命周期”（这是最关键的区分点！）
+在注册时，我们会看到三种 AddXxx 方法。选错了，你的程序可能会出现数据污染或内存泄漏。
+
+AddTransient（瞬态）
+
+含义：每次请求都全新创建一个实例。
+
+适用场景：无状态、轻量级的服务（比如单纯的数学计算、字符串处理工具）。
+
+警告：因为每次都新建，所以它不会保存任何前一次调用的状态。内存消耗大，但非常安全。
+
+AddScoped（作用域）
+
+含义：在同一个 HTTP 请求（或同一个作用域）内，大家共享同一个实例。
+
+适用场景：数据库上下文（DbContext）。因为一次请求里的多次数据库操作，应该共享同一个链接。
+
+警告：一旦一次请求结束，这个对象就会被销毁。如果你把一个 Scoped 的服务强行存在全局变量里，会导致数据不一致。
+
+AddSingleton（单例）
+
+含义：整个应用程序（进程）一生只有这唯一的一个实例。
+
+适用场景：配置管理（IConfiguration）、缓存服务（IMemoryCache）、日志组件。
+
+警告：绝不要让单例去持有 Scoped 服务！否则会造成生命周期盗窃（Captive Dependency），导致数据库上下文永远不释放，内存越跑越高。
+
+·第五层：底层原理与避坑（.NET 8 的终极演进）
+1. 容器底层是怎么造出对象的？
+在旧版本中，容器依赖 ActivatorUtilities.CreateInstance（说白了就是反射 ConstructorInfo.Invoke）。这在程序启动时会有极微小的性能损耗。
+但是，在 .NET 8 的 Native AOT（预编译）模式下，微软使用了 “源生成器（Source Generator）”。容器在编译阶段就偷偷把 new UserService(new UserRepository()) 这种代码直接写死在生成的 C# 代码里了。抛弃了反射，实现了零运行时损耗的极致性能。
+
+2. 致命坑：循环依赖（死锁）
+如果你注册了 A，A 的构造函数要 B；B 的构造函数要 A。
+
+容器在运行时查字典，会陷入死循环，直接抛出 Circular dependency detected（检测到循环依赖）异常。
+
+解法：将其中一个注入改为 Lazy<T> 或使用构造函数注入+属性注入的折衷方案。
+
+3. 为什么接口（Interface）比类（Class）更重要？
+注册时，通常写成 AddScoped<IUserRepo, UserRepo>()，而不是 AddScoped<UserRepo>()。
+
+深层原因：为了解耦和单元测试。如果将来你把 UserRepo 换成了 RedisUserRepo，你只需要把注册代码改成 AddScoped<IUserRepo, RedisUserRepo>()，你的控制器代码一行都不用改！如果不写接口，你就做不到这种零成本替换。

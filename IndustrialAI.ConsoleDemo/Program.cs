@@ -5,8 +5,13 @@ using IndustrialAI.Core.Cache;
 using IndustrialAI.Core.Driver;
 using IndustrialAI.Core.Events;
 using IndustrialAI.Core.Factory;
+using IndustrialAI.Core.Logging;
 using IndustrialAI.Core.Model;
 using IndustrialAI.Core.Training.DelegateEvent;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using System.Diagnostics;
 using System.Reflection;
 
 #if false
@@ -158,8 +163,6 @@ using System.Reflection;
 }
 #endregion
 
-#endif
-
 #region Delegate Event
 Console.WriteLine("========== 标准事件与多播委托专项训练 ==========\n");
 
@@ -208,5 +211,150 @@ using (var loggerSub = new DataLoggerSubscriber(plcPublisher))
 Console.WriteLine("\n--- 场景 7: 全部取消后，发布者无响应 ---");
 plcPublisher.OnSimulateValueUpdate(0.0f);
 #endregion
+
+
+#region Async logger
+Console.WriteLine("========== Week 2 Day 1: 异步日志管道测试 ==========\n");
+
+using IHost host = Host.CreateDefaultBuilder(args).ConfigureServices((context, services) => {
+    //将AsyncLogger注册为单例，使整个应用共享
+    services.AddSingleton<AsyncLogger>();
+    //注册服务
+    services.AddHostedService<LoggingBackgroundService>();
+}).Build();
+
+//启动host，这会触发启动LoggingBackgroundService中的ExcuteAsync
+await host.StartAsync();
+
+//获取注册过的AsyncLogger实例
+var logger = host.Services.GetRequiredService<AsyncLogger>();
+
+Console.WriteLine("开始模拟写入 100 条日志（观察控制台实时输出）...\n");
+
+//模拟业务线程同时写入日志（高并发场景）
+for (int i = 0; i < 100; i++)
+{
+    var entry = i % 10 == 0
+        ? LogEntry.CreateError($"PLC-{i % 5} 通讯超时 (Code: 0x{i:X2})", $"PLC-{i % 5}")
+        : LogEntry.CreateInfo($"采集到数据点 #{i}", $"Device-{i % 3}");
+
+    await logger.LogAsync(entry); // 这里会立刻返回，不会阻塞循环
+}
+
+Console.WriteLine("\n所有日志已投递到队列，等待 2 秒让后台消费完...");
+await Task.Delay(2000); // 给后台消费者一点时间处理
+
+//优雅关闭主机（会触发 StopAsync -> FlushAsync）
+Console.WriteLine("\n正在关闭主机，确保所有日志被刷新...");
+await host.StopAsync();
+
+Console.WriteLine("\n========== 测试完成，按任意键退出 ==========");
+#endregion
+
+
+#region Async logger with pressure
+Console.WriteLine("========== Week 2 Day 2: 异步日志 + 背压 + 重试测试 ==========\n");
+
+using IHost host = Host.CreateDefaultBuilder(args).ConfigureServices((context, services) =>
+{
+    services.AddSingleton<AsyncLogger>(sp => new AsyncLogger(channelCapacity: 50));//返回AsyncLogger单例，设置最大channel长度为50
+
+    services.AddHostedService<LoggingBackgroundService>();//注册服务
+}).Build();
+
+await host.StartAsync();
+
+var logger = host.Services.GetRequiredService<AsyncLogger>();//获取注册过的AsyncLogger单例
+
+Console.WriteLine("开始模拟高并发写入 500 条日志（通道容量仅 50，会触发背压）...\n");
+
+var stopwatch = Stopwatch.StartNew();
+
+// 同时启动 10 个生产者任务，每个写 50 条 = 500 条
+Task[] producers = new Task[10];
+for (int i = 0; i < producers.Length; i++)
+{
+    int producerId = i;
+    producers[i] = Task.Run(async () =>
+    {
+        for (int j = 0; j < 50; j++)
+        {
+            var entry = j % 5 == 0
+                ? LogEntry.CreateError($"Producer-{producerId} 模拟故障", $"PLC-{producerId}")
+                : LogEntry.CreateInfo($"Producer-{producerId} 数据点 #{j}", $"Device-{producerId}");
+
+            // 【关键】LogAsync 内部会因背压而异步等待，所以总体写入时间会被拉长。
+            await logger.LogAsync(entry);
+        }
+        Console.WriteLine($"生产者 {producerId} 完成。");
+    });
+}
+
+await Task.WhenAll(producers);
+
+stopwatch.Stop();
+
+Console.WriteLine($"\n所有日志已投递完成，耗时 {stopwatch.ElapsedMilliseconds} ms。");
+Console.WriteLine("等待 3 秒让后台消费完...");
+await Task.Delay(3000);
+
+await host.StopAsync();
+Console.WriteLine("\n测试完成，按任意键退出。");
+
+#endregion
+
+
+IndustrialAI.Core.Foundation.ClosureAndBoxingDemo.Run();
+
+
+IndustrialAI.Core.Foundation.MemoryBarrierDemo.Run();
+
+
+#endif
+
+Console.WriteLine("\n========== Week 2 Day 3: 日志批量/限流测试 ==========\n");
+
+using IHost host = Host.CreateDefaultBuilder(args).ConfigureServices((context, services) =>
+{
+    services.Configure<LoggerOptions>(options => {
+        options.ChannelCapacity = 50;
+        options.BatchSize = 10;
+        options.BatchIntervalMilliseconds = 200;
+        options.MaxRetryAttempts = 2;
+    });
+    services.AddSingleton<AsyncLogger>();
+    //*****************************************************************************************************
+    //注意，虽然现在的AsyncLogger构造函数中有一个参数Ioptions，但是此处注册单例对象的时候并没有传入IOptions的参数
+    //因为此时DI容器会优先选择参数最多的构造函数，然后找到需要IOptions<logOptions>类型的参数，此时容器会在注册表里寻找是否存在该类型服务
+    //IOptions<T>是框架自动注册的，容器可以找到这样的实例，然后直接传给了AsyncLogger构造函数
+    //这就好比你去餐厅点了一份“主厨推荐套餐”（AddSingleton<AsyncLogger>()），后厨（DI容器）会根据菜单（服务注册表）自动为你配好例汤、主菜和甜点（IOptions<LoggerOptions> 等依赖项）。
+    //当构造函数中存在容器没有存在的类型参数，此时才需要手动处理
+
+    services.AddHostedService<LoggingBackgroundService>();
+}).Build();
+
+await host.StartAsync();
+
+var logger = host.Services.GetService<AsyncLogger>();
+
+//此处会报错，因为host.Services.GetService<LoggerOptions>() 结果是 null，是因为此处根本没有把 LoggerOptions 这个“类”注册到 DI 容器里，只注册了 IOptions<LoggerOptions> 这个接口。
+//Console.WriteLine($"写入 120 条日志（观察批量输出，每批约 {host.Services.GetService<LoggerOptions>()!.BatchSize} 条或 {host.Services.GetService<LoggerOptions>()!.BatchIntervalMilliseconds}ms 超时）...\n");
+
+
+//正确写法：
+Console.WriteLine($"写入 120 条日志（观察批量输出，每批约 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchSize} 条或 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchIntervalMilliseconds}ms 超时）...\n");
+
+for (int i = 0; i < 120; i++)
+{
+    await logger.LogAsync(LogEntry.CreateInfo($"数据点 #{i}", $"Node-{i % 4}"));
+    await Task.Delay(2); // 模拟业务间隔
+}
+
+Console.WriteLine("\n等待 1 秒让最后一批触发超时...");
+await Task.Delay(1000);
+
+await host.StopAsync();
+
+Console.WriteLine("\n测试完成，按任意键退出。");
 
 Console.ReadKey();
