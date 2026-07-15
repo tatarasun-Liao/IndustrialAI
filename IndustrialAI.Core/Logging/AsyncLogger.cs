@@ -225,6 +225,13 @@ namespace IndustrialAI.Core.Logging
             {
                 timer.Start();
 
+                //ReadAllAsync 会异步等待，直到channel内有数据，没有数据时这个循环会挂起等待channel内再次有数据时，开始进行内部逻辑
+                //Channel 内部有一个同步机制（基于 SemaphoreSlim 和异步操作）。当 WriteAsync 执行时，Channel 会立即检查是否有正在等待读取的异步操作（就是步骤 2 中挂起的 ReadAllAsync）。
+                //如果有，它会把数据直接“推送”给那个等待者，并唤醒它。
+                //被唤醒后，await foreach 继续执行，拿到 entry，加入 buffer。
+
+                //所以可以认为channel是一个类似传送带，ReadAllAsync会一直异步等待writeAsync触发的channel内部通知，当存在数据时（通过WriteAsync写入）唤醒ReadAllAsync遍历内部逻辑，
+                //如果channel内没有数据，ReadAllAsync会挂起，只有再次接受到通知才会被唤醒继续执行
                 await foreach (var entry in _channel.Reader.ReadAllAsync(externalCancellationToken))
                 {
                     buffer.Add(entry);
@@ -293,7 +300,7 @@ namespace IndustrialAI.Core.Logging
 
                     attempt++;
 
-                    //****************************************************8
+                    //****************************************************
                     // 【底层原理】指数退避使用左移运算符加速：2^attempt 秒。
                     // 左移比 Math.Pow 快，且完全基于整数，避免浮点误差。
                     var delaySeconds = 1 << attempt; // 2, 4, 8 秒
@@ -346,7 +353,7 @@ namespace IndustrialAI.Core.Logging
             }
             catch (ChannelClosedException)
             {
-                
+
             }
 
             await Task.CompletedTask;//结束线程在方法外部，此处仅作为标记

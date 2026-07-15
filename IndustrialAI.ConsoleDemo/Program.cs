@@ -212,7 +212,6 @@ Console.WriteLine("\n--- 场景 7: 全部取消后，发布者无响应 ---");
 plcPublisher.OnSimulateValueUpdate(0.0f);
 #endregion
 
-
 #region Async logger
 Console.WriteLine("========== Week 2 Day 1: 异步日志管道测试 ==========\n");
 
@@ -250,7 +249,6 @@ await host.StopAsync();
 
 Console.WriteLine("\n========== 测试完成，按任意键退出 ==========");
 #endregion
-
 
 #region Async logger with pressure
 Console.WriteLine("========== Week 2 Day 2: 异步日志 + 背压 + 重试测试 ==========\n");
@@ -303,14 +301,13 @@ Console.WriteLine("\n测试完成，按任意键退出。");
 
 #endregion
 
-
+#region queue logs
 IndustrialAI.Core.Foundation.ClosureAndBoxingDemo.Run();
 
 
 IndustrialAI.Core.Foundation.MemoryBarrierDemo.Run();
 
 
-#endif
 
 Console.WriteLine("\n========== Week 2 Day 3: 日志批量/限流测试 ==========\n");
 
@@ -356,5 +353,74 @@ await Task.Delay(1000);
 await host.StopAsync();
 
 Console.WriteLine("\n测试完成，按任意键退出。");
+#endregion
+
+#endif
+
+using IHost host = Host.CreateDefaultBuilder(args).ConfigureServices((context, services) =>
+{
+
+    services.Configure<LoggerOptions>(options =>
+    {
+        options.ChannelCapacity = 50;
+        options.BatchSize = 10;
+        options.BatchIntervalMilliseconds = 200;
+        options.MaxRetryAttempts = 2;
+
+        //文件参数
+        options.LogDirectory = "E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/bin/Debug/net8.0/IndustrialLogs";  // 可改成你想要的路径
+        options.LogFileName = "device_events.log";
+        options.MaxFileSizeMB = 2;
+    });
+
+    services.AddSingleton<AsyncLogger>();//创建单例对象
+
+    services.AddHostedService<LoggingBackgroundService>();//创建后台一直运行的服务
+}).Build();
+
+await host.StartAsync();
+
+var logger = host.Services.GetService<AsyncLogger>();
+
+Console.WriteLine($"写入 120 条日志（观察批量输出，每批约 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchSize} 条或 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchIntervalMilliseconds}ms 超时）...\n");
+
+Console.WriteLine($"日志文件将保存到: E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/bin/Debug/net8.0/IndustrialLogs\\device_events.log");
+Console.WriteLine("开始模拟写入 200 条日志（文件达到 2MB 时会自动滚动）...\n");
+
+var stopwatch = Stopwatch.StartNew();
+
+// 模拟多个生产者并行写入（触发背压）
+Task[] producers = new Task[10];
+for (int i = 0; i < producers.Length; i++)
+{
+    int producerId = i;
+    producers[i] = Task.Run(async () =>
+    {
+        for (int j = 0; j < 20; j++) // 每个生产者写 20 条，共 200 条
+        {
+            var entry = j % 5 == 0
+                ? LogEntry.CreateError($"Producer-{producerId} 模拟故障码 0x{j:X2}", $"PLC-{producerId}")
+                : LogEntry.CreateInfo($"Producer-{producerId} 采集数据点 #{j}", $"Device-{producerId}");
+
+            await logger.LogAsync(entry);
+        }
+        Console.WriteLine($"生产者 {producerId} 完成。");
+    });
+}
+
+await Task.WhenAll(producers);
+stopwatch.Stop();
+Console.WriteLine($"\n所有日志投递完成，耗时 {stopwatch.ElapsedMilliseconds} ms。");
+
+// 等待几秒，让后台服务将剩余日志刷入文件
+Console.WriteLine("等待 3 秒让后台批量写入完成...");
+await Task.Delay(3000);
+
+// 4. 优雅关闭主机（触发 LoggingBackgroundService.StopAsync -> ForceFlushAndCloseAsync）
+Console.WriteLine("\n正在关闭主机，强制刷新页缓存到磁盘...");
+await host.StopAsync();
+
+Console.WriteLine("\n测试完成。请到 Logs 目录检查日志文件，并验证是否发生了滚动（超过 1MB 后生成新文件）。");
+Console.WriteLine("按任意键退出。");
 
 Console.ReadKey();

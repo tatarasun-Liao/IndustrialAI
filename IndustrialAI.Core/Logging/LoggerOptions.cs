@@ -45,5 +45,17 @@ namespace IndustrialAI.Core.Logging
 
         // 将 double 毫秒转换为 TimeSpan 的计算属性（只读）
         public TimeSpan BatchInterval => TimeSpan.FromMilliseconds(BatchIntervalMilliseconds);
+
+        public string LogDirectory { get; set; } = "Logs";
+
+        public string LogFileName { get; set; } = "app.log";
+
+        // 【底层原理】单位 MB。当文件大小超过此值，触发滚动。
+        // 工业场景建议 10~50 MB，避免单个文件过大导致加载慢或磁盘碎片。
+        [Range(1, 50)]
+        public int MaxFileSizeMB { get; set; } = 10;
+
+        // 计算属性：将 MB 转换为字节（long）
+        public long MaxFileSizeBytes => MaxFileSizeMB * 1024L * 1024L;
     }
 }

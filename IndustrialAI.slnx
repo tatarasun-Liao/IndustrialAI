@@ -3,8 +3,11 @@
     <File Path="Attribute.txt" />
     <File Path="delegate.txt" />
     <File Path="DI.txt" />
+    <File Path="FileStreamAndPageCache.txt" />
     <File Path="Generic.txt" />
+    <File Path="IAsyncDisposable.txt" />
     <File Path="MemoryBarrier_Volatile_Interlock.txt" />
+    <File Path="RollingFile.txt" />
     <File Path="ThreadTask.txt" />
   </Folder>
   <Project Path="E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/IndustrialAI.ConsoleDemo.csproj" Id="d8ee3fa3-177b-485c-b358-d9093b487427" />
