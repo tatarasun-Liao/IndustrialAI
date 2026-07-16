@@ -5,11 +5,15 @@
     <File Path="DI.txt" />
     <File Path="FileStreamAndPageCache.txt" />
     <File Path="Generic.txt" />
+    <File Path="Http.txt" />
     <File Path="IAsyncDisposable.txt" />
     <File Path="MemoryBarrier_Volatile_Interlock.txt" />
+    <File Path="Observability.txt" />
     <File Path="RollingFile.txt" />
     <File Path="ThreadTask.txt" />
+    <File Path="WebApi.txt" />
   </Folder>
   <Project Path="E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/IndustrialAI.ConsoleDemo.csproj" Id="d8ee3fa3-177b-485c-b358-d9093b487427" />
   <Project Path="E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.Core/IndustrialAI.Core.csproj" />
+  <Project Path="IndustrialAI.Gateway/IndustrialAI.Gateway.csproj" Id="16d613aa-694c-4a4f-ae47-fd41a41165d4" />
 </Solution>

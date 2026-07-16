@@ -1,0 +1,41 @@
+📡 第一层：HTTP 是“寄快递”的规矩
+HTTP 本质上就是 “快递员送包裹” 的一套明文约定。一个 HTTP 请求包含 4 个部分，我们逐个对应到你写的代码上：
+
+HTTP 组成部分	白话翻译（快递类比）	你写的代码 / Postman 操作
+1. 请求行（Method + URL）	快递单上的“派送方式（空运/陆运）”和“收件地址”。	你写的 [HttpGet("write")] 决定方式（GET），[Route("api/[controller]")] + ?message=xxx 组成地址。
+2. Header（请求头）	快递单上的“备注栏”：比如“轻拿轻放”、“冷藏”。	Postman 自动加的 Content-Type: application/json，告诉服务器“包裹里是 JSON 格式”。
+3. 空行（分隔符）	快递单上的“分割线”，用来区分“备注”和“包裹内容”。	框架自动处理，你看不到但它是 HTTP 协议强制规定的。
+4. Body（消息体）	快递箱里的实际货物。	你 POST 请求时贴在 Body 里的 [{"message":"..."}]。没有 Body 的 GET 请求，这箱就是空的。
+🔍 第二层：深度解析你刚做的两个 Postman 请求（拆开来）
+你的 GET 请求：
+
+text
+GET /api/log/write?message=HelloFromPostman HTTP/1.1
+Host: localhost:7001
+Verb（动词）是 GET：表示“我去拿点东西”。在你代码里，[HttpGet] 就是告诉框架“这个方法是处理 GET 快递的”。
+
+?message=HelloFromPostman：这叫 Query String（查询字符串）。它就像“快递单上的备注”，必须放在 URL 里。你代码里的 string message 能自动取到这个值，是因为框架在底层解析了这个位置。
+
+你的 POST 请求：
+
+text
+POST /api/log/batch HTTP/1.1
+Host: localhost:7001
+Content-Type: application/json
+Content-Length: 85
+
+[{"message":"温度传感器异常","level":"Error"}]
+Verb 是 POST：表示“我把这箱货运过去给你”。你代码里的 [HttpPost] 就是干这个的。
+
+Content-Type: application/json：这是 Header（请求头），告诉后端“这箱货的格式是 JSON”。如果你没加这行，后端看到的是纯文本，无法反序列化，会返回 415 错误。你之前 Postman 必须点 raw -> JSON，就是在帮你自动写这个 Header。
+
+Body：这箱货里装的就是你贴进去的 JSON 字符串。你代码里的 [FromBody] List<BatchLogEntryDto>，就是告诉框架“把这箱货拆包，翻译成 C# 对象”。
+
+⚙️ 第三层：你写的代码到底在 HTTP 的哪一层？（关键连接）
+你现在可能会想：“我知道这些，但我写的 C# 代码是怎么变成上面那串字符的？”
+
+HttpClient.PostAsJsonAsync：当你调用这行代码时，它把你的 DTO 对象序列化（Serialize）成上面那串 JSON 字符串，然后拼接出完整的 HTTP 报文（Verb + Header + Body）。
+
+Kestrel（Web 服务器）接收：你的网关程序里的 Kestrel 在监听端口 7001。当它收到这串报文时，它拆包，发现是 POST /api/log/batch，然后找到你的 LogController。
+
+模型绑定：框架看到你的参数是 [FromBody] List<BatchLogEntryDto>，就去 Body 里拿出那串 JSON，反序列化（Deserialize） 成 C# 对象。这就是为什么你写 logs.Count 能拿到 2——因为 JSON 数组被翻译成了 C# 的 List。

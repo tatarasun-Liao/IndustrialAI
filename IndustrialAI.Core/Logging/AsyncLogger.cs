@@ -28,6 +28,9 @@ namespace IndustrialAI.Core.Logging
             );
 #endif
 
+        //获取当前队列中待处理的任务数量
+        public int PendingCount => _channel.Reader.Count;
+
         //真正生产环境的话需要注重负载性，所以不可以使用无界通道，而是使用固定长度的有界通道，当队列满时（生产者速度大于消费者速度），生产者会异步等待
         //注意，容量设置需要结合实际业务，如果消费者处理很慢，而生产者处理很快，则容量满了会反压上游
         private readonly Channel<LogEntry> _channel;
@@ -64,6 +67,8 @@ namespace IndustrialAI.Core.Logging
                 SingleWriter = false
             };
             _channel = Channel.CreateBounded<LogEntry>(channelOpts);
+
+            Console.WriteLine($"[诊断] 构造函数参数 - BatchSize = {opts.BatchSize}, ChannelCapacity = {opts.ChannelCapacity}");
         }
 
 
@@ -122,6 +127,9 @@ namespace IndustrialAI.Core.Logging
 
             //对于有界通道，TryWrite 可能失败（当通道满时）。
             // 我们直接使用 WriteAsync，它会自动等待直到队列有空位。
+
+            //这是一个天然的限流器，当队列满时，生产者会直接被异步阻塞，直到消费者腾出队列空间（主动限流）
+            //也就是客户端不需要主动减速，而是通过这种阻塞的背压机制延长客户端响应时间放慢请求速度达到控流
             await _channel.Writer.WriteAsync(entry, cancellationToken);
         }
 
@@ -234,9 +242,11 @@ namespace IndustrialAI.Core.Logging
                 //如果channel内没有数据，ReadAllAsync会挂起，只有再次接受到通知才会被唤醒继续执行
                 await foreach (var entry in _channel.Reader.ReadAllAsync(externalCancellationToken))
                 {
+                    Console.WriteLine("消费者被唤醒");
+
                     buffer.Add(entry);
 
-                    if (buffer.Count > batchSize)//如果是到达批量触发条件
+                    if (buffer.Count >= batchSize)//如果是到达批量触发条件
                     {
                         await EmitBatchWithRetryAsync(buffer, batchEmitter, maxAttempts, externalCancellationToken);
                         buffer.Clear();
@@ -294,7 +304,7 @@ namespace IndustrialAI.Core.Logging
                     await batchEmitter(batch);
                     return; // 成功
                 }
-                catch (Exception ex) when (attempt < maxAttempts - 1)
+                catch (Exception ex) when (attempt < maxAttempts - 1)//捕获到了N-1次错误但是最后一次错误没有捕捉
                 {
                     lastError = ex;
 
@@ -308,6 +318,13 @@ namespace IndustrialAI.Core.Logging
                     Console.WriteLine($"[Retry] Batch ({batch.Count}) failed. Retry in {delaySeconds}s...");
 
                     await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+                }
+                // ★★★ 关键修复：捕获最后一次失败的异常，但不重新抛出 ★★★
+                catch (Exception ex)
+                {
+                    // 这是最后一次尝试（attempt == maxAttempts - 1）失败
+                    lastError = ex;
+                    break; // 跳出循环，不再重试
                 }
             }
 

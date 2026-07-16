@@ -99,3 +99,11 @@ AddSingleton（单例）
 注册时，通常写成 AddScoped<IUserRepo, UserRepo>()，而不是 AddScoped<UserRepo>()。
 
 深层原因：为了解耦和单元测试。如果将来你把 UserRepo 换成了 RedisUserRepo，你只需要把注册代码改成 AddScoped<IUserRepo, RedisUserRepo>()，你的控制器代码一行都不用改！如果不写接口，你就做不到这种零成本替换。
+
+4.注入方式有三种，但 99% 的场景只用第一种（也是我们正在用的）：
+
+构造函数注入（最佳实践）：依赖关系一目了然，对象一旦创建就不可变。你刚刚写的 LogController 就是。
+
+属性注入：不推荐，因为会隐藏依赖，容易造成 NullReferenceException。
+
+方法注入：极少用。

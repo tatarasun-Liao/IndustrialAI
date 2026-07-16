@@ -8,6 +8,7 @@ using IndustrialAI.Core.Factory;
 using IndustrialAI.Core.Logging;
 using IndustrialAI.Core.Model;
 using IndustrialAI.Core.Training.DelegateEvent;
+using IndustrialAI.Core.Training.Generic;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -355,6 +356,35 @@ await host.StopAsync();
 Console.WriteLine("\n测试完成，按任意键退出。");
 #endregion
 
+
+#region practice generic
+GenericTest genericTest = new GenericTest();
+//如果我把 where T : new() 约束去掉，改用 Activator.CreateInstance<T>()，编译能通过吗？运行时如果 T 没有无参构造，会抛出什么异常？（答：编译通过，运行时抛 MissingMethodException）
+//因为Activator.CreateInstance实际上就是调用了无参构造函数来创建对象
+//genericTest.CreateInstance<string>();
+genericTest.CreateInstance<TestClass_0>();
+
+//这两个都不会报错
+//A是协变，支持右侧子类参数类型传递给左侧有继承关系的泛型类中的父类参数类型
+//B是逆变，支持右侧父类给到左侧子类
+IProducer<object> producer = new Producer<string>();  // 行 A
+IConsumer<string> consumer = new Consumer<object>();  // 行 B
+
+
+var b = new Broadcaster();
+for (int i = 0; i < 10; i++) { var s = new Subscriber(b); }
+b.Trigger(); // 会打印几次 "Hi"？//十次，相当于+=了10次，并依次执行输出
+GC.Collect();
+b.Trigger(); // 现在打印几次？//还是10次，因为事件是强引用，需要显式-=才可以被GC回收，需要Subscriber实现IDisposeable接口并在Dispose方法内-=事件或者使用弱引用类型包裹事件来使用
+
+//IDisposable（-=）：显式、确定性、简单，但需要订阅者合作。
+
+//WeakReference（弱事件）：自动、无需清理，但会导致性能开销、更复杂的委托管理（代理），并且如果处理程序是 lambda，仍有弱引用问题。
+//澄清“为什么我们用两者（在我们的项目中）？”：在 EventBus 中，我们使用 WeakReference，因为发布者（EventBus）是长期存在的单例。我们这样做是为了让订阅者即使忘记取消订阅也能被 GC。然而，对于 Broadcaster / Subscriber 这种简单的一对一强耦合，IDisposable 更简单。
+//WeakReference 必须包裹订阅者实例，或者委托必须指向订阅者的实例方法（而不是匿名方法），才能彻底安全
+#endregion
+
+
 #endif
 
 using IHost host = Host.CreateDefaultBuilder(args).ConfigureServices((context, services) =>
@@ -362,15 +392,22 @@ using IHost host = Host.CreateDefaultBuilder(args).ConfigureServices((context, s
 
     services.Configure<LoggerOptions>(options =>
     {
-        options.ChannelCapacity = 50;
-        options.BatchSize = 10;
-        options.BatchIntervalMilliseconds = 200;
-        options.MaxRetryAttempts = 2;
+        // 极端压力测试参数
+        options.ChannelCapacity = 5;          // 队列极短（制造背压）
+        options.BatchSize = 2;                // 攒够2条就写
+        options.BatchIntervalMilliseconds = 10000; // 超时设为10秒（故意让它几乎不起作用，纯粹靠条数触发）
+        options.MaxRetryAttempts = 3;         // 减少重试干扰
+
+        //options.ChannelCapacity = 50;
+        //options.BatchSize = 10;
+        //options.BatchIntervalMilliseconds = 200;
+        //options.MaxRetryAttempts = 2;
 
         //文件参数
         options.LogDirectory = "E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/bin/Debug/net8.0/IndustrialLogs";  // 可改成你想要的路径
+        options.LogDirectory = "E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/bin/Debug/net8.0/ReadOnlyLogs";  // 改为只读路径
         options.LogFileName = "device_events.log";
-        options.MaxFileSizeMB = 2;
+        options.MaxFileSizeMB = 10;
     });
 
     services.AddSingleton<AsyncLogger>();//创建单例对象
@@ -382,9 +419,9 @@ await host.StartAsync();
 
 var logger = host.Services.GetService<AsyncLogger>();
 
-Console.WriteLine($"写入 120 条日志（观察批量输出，每批约 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchSize} 条或 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchIntervalMilliseconds}ms 超时）...\n");
+Console.WriteLine($"写入 200 条日志（观察批量输出，每批约 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchSize} 条或 {host.Services.GetService<IOptions<LoggerOptions>>()!.Value.BatchIntervalMilliseconds}ms 超时）...\n");
 
-Console.WriteLine($"日志文件将保存到: E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/bin/Debug/net8.0/IndustrialLogs\\device_events.log");
+Console.WriteLine($"日志文件将保存到: E:/RealtimeCurve/IndustrialAI.Core/IndustrialAI.ConsoleDemo/bin/Debug/net8.0/ReadOnlyLogs\\device_events.log");
 Console.WriteLine("开始模拟写入 200 条日志（文件达到 2MB 时会自动滚动）...\n");
 
 var stopwatch = Stopwatch.StartNew();
@@ -396,13 +433,20 @@ for (int i = 0; i < producers.Length; i++)
     int producerId = i;
     producers[i] = Task.Run(async () =>
     {
-        for (int j = 0; j < 20; j++) // 每个生产者写 20 条，共 200 条
-        {
-            var entry = j % 5 == 0
-                ? LogEntry.CreateError($"Producer-{producerId} 模拟故障码 0x{j:X2}", $"PLC-{producerId}")
-                : LogEntry.CreateInfo($"Producer-{producerId} 采集数据点 #{j}", $"Device-{producerId}");
+        //for (int j = 0; j < 20; j++) // 每个生产者写 20 条，共 200 条
+        //{
+        //    var entry = j % 5 == 0
+        //        ? LogEntry.CreateError($"Producer-{producerId} 模拟故障码 0x{j:X2}", $"PLC-{producerId}")
+        //        : LogEntry.CreateInfo($"Producer-{producerId} 采集数据点 #{j}", $"Device-{producerId}");
 
+        //    await logger.LogAsync(entry);
+        //}
+
+        for (int i = 0; i < 2; i++) // 每个生产者写 2 条
+        {
+            var entry = LogEntry.CreateInfo($"压力测试 #{i}", $"P{producerId}");
             await logger.LogAsync(entry);
+            // await Task.Delay(1);  // 这一行必须删掉或注释掉！
         }
         Console.WriteLine($"生产者 {producerId} 完成。");
     });
@@ -422,5 +466,7 @@ await host.StopAsync();
 
 Console.WriteLine("\n测试完成。请到 Logs 目录检查日志文件，并验证是否发生了滚动（超过 1MB 后生成新文件）。");
 Console.WriteLine("按任意键退出。");
+
+
 
 Console.ReadKey();
